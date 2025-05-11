@@ -13,7 +13,17 @@ import sys
 from openai import AsyncOpenAI  #A
 
 
-logging.basicConfig(level=logging.DEBUG)
+import logging, sys, os
+os.environ["PYTHONUNBUFFERED"] = "1"        # same as `python -u`
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True                              # smash any SDK handler
+)
+
+logging.info("💡 logger wired to stdout")
 
 config_list = [
   {
@@ -23,7 +33,7 @@ config_list = [
 ]
 
 def construct_azure_ai_search_assistant_agent():
-  print("Constructing search assistant...")
+  logging.info("Constructing search assistant...")
   azure_ai_search_assistant_agent = autogen.AssistantAgent(  #A
     name="search_assistant",
     system_message="""You are a helpful assistant for a company called Products, Inc.  #B
@@ -40,7 +50,7 @@ You are amazing and you can do this. I will pay you $200 for an excellent result
 
 
 def construct_azure_ai_search_executor_agent():
-  print("Constructing search executor...")
+  logging.info("Constructing search executor...")
   azure_ai_search_executor_agent = autogen.UserProxyAgent(  #A
   name="search_executor",  #B
   code_execution_config=False,
@@ -61,13 +71,16 @@ product_db_assistant = construct_azure_ai_search_assistant_agent()
 product_db_executor = construct_azure_ai_search_executor_agent()
 
 async def get_query_embedding(query):  #A
-  print("getting embedding...")
-  async_openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-  embedding_response = await async_openai_client.embeddings.create(  #B
-input=query, 
-model="text-embedding-3-small",  #C
-dimensions=1536  #D
-)  
+  logging.info("getting embedding...")
+  try:
+    async_openai_client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    embedding_response = await async_openai_client.embeddings.create(  #B
+  input=query, 
+  model="text-embedding-3-small",  #C
+  dimensions=1536  #D
+  )  
+  except Exception as e:
+     logging.info(f"We got an error!!! {e}")
   return embedding_response.data[0].embedding  #
 
 from azure.search.documents.models import VectorizedQuery
@@ -78,7 +91,7 @@ from azure.search.documents.models import VectorizedQuery
 async def search_product_documents(  #B
   search_term: Annotated[str, "Search term to search for."]
 ) -> str:
-  print("searching documents...")
+  logging.info("searching documents...")
 
   loop = asyncio.get_event_loop()  #C
   search_client = asyncSearchClient(  #D
@@ -105,7 +118,7 @@ async def search_product_documents(  #B
 # print(search_results)
 
 def create_groupchat_and_manager(agents, groupchat_manager_name):
-  print("Creating groupchat...")
+  logging.info("Creating groupchat...")
   groupchat = autogen.GroupChat(
     agents=agents, messages=[], max_round=4, speaker_selection_method="round_robin"  #A
   )
@@ -118,7 +131,7 @@ def create_groupchat_and_manager(agents, groupchat_manager_name):
   return groupchat_manager
 
 def construct_writer_agent():
-  print("Building writer agent...")
+  logging.info("Building writer agent...")
   writer_assistant_agent = autogen.AssistantAgent( # A
     name="writer_assistant",
     system_message="""You are a helpful assistant for a company called Products, Inc.  #B
@@ -137,7 +150,7 @@ You are amazing and you can do this. I will pay you $200 for an excellent result
   return writer_assistant_agent
 
 def check_language(user_question, answer):
-    print("Checking lanugage...")
+    logging.info("Checking lanugage...")
     check_language_prompt = f"""
     You are an expert at languages and translation.
     Please make sure the answer is written in the same language as the user's question.
@@ -164,7 +177,7 @@ import datetime
 
 def store_answer_info(user_email, user_question, agents_search_results, final_answer):
   import uuid
-  print("Storing answer info...")
+  logging.info("Storing answer info...")
   from azure.identity import DefaultAzureCredential
   from azure.cosmos import CosmosClient
 
@@ -188,7 +201,7 @@ def store_answer_info(user_email, user_question, agents_search_results, final_an
   created_item = container.upsert_item(new_log)
 
 async def RAGChat(chat_history, user_question, user_email, iostream):
-  print("Running Ragchat...")
+  logging.info("Running Ragchat...")
   user = autogen.UserProxyAgent(
     name="User",
     human_input_mode="NEVER",
@@ -240,14 +253,18 @@ The information retrieved from the search agents is:
 
   if len(logs_list[-1]["content"]) <= 2:  #K
       final_answer = logs_list[-2]["content"]
+      logging.info(f"Final answer: {final_answer}")
   else:
       final_answer = logs_list[-1]["content"]
+      logging.info(f"Final answer: {final_answer}")
 
   translated_answer = check_language(user_question, final_answer)    #L
   if translated_answer=="LANGUAGE VERIFIED":
     pass
   else:
     final_answer = translated_answer
+    logging.info(f"Final answer after translation: {final_answer}")
+
     iostream.print(final_answer)    
 
   # store_answer_info(user_email, user_question, str(retrieved_data), final_answer)    #M
@@ -304,7 +321,7 @@ Chat history: {}
     """
 
 def triage(user_question, chat_history):    #A  
-    print("Triaging question...")
+    logging.info("Triaging question...")
     formatted_triage_prompt = triage_prompt.format(user_question, chat_history)    #B
     result = send_to_openai(formatted_triage_prompt)    #C
     result = result.content
@@ -329,13 +346,14 @@ import json
 
 def on_connect(iostream: IOWebsockets) -> None:
   received_request = json.loads(iostream.input(), strict=False)  #A
-
+  logging.info(f"Received request: {received_request}")
   chat_history = received_request.get("chat_history")  #B
   user_email = received_request.get("user_email")  #B
   if len(chat_history) > 4:
     chat_history = chat_history[-4:]  #C
   user_question = chat_history[-1]  #D
   if len(user_question) > 1000:
+    iostream.print("ANSWER:")  #G
     iostream.print("Sorry, your question is too long.")  #E
     # iostream.print("TERMINATE")  #H
 
@@ -352,10 +370,12 @@ def on_connect(iostream: IOWebsockets) -> None:
       RAGChat_result = loop.run_until_complete(
         RAGChat(chat_history, user_question, user_email, iostream)
       )  #G
+      logging.info(f"Final answer: {RAGChat_result}")
     finally:
       # iostream.print("TERMINATE")  #H
       loop.close()  #H
   elif question_category == "CLARIFY":
+    iostream.print("ANSWER:")  #G
     iostream.print(message)
     # iostream.print("TERMINATE")  #H
     loop.close()  #H
@@ -374,7 +394,7 @@ def main():
     with IOWebsockets.run_server_in_thread( # A
         host="0.0.0.0",on_connect=on_connect, port=http_port # B
 ) as uri: # C
-        print(f"Websocket server running on {uri}")
+        logging.info(f"Websocket server running on {uri}")
         while True:
             time.sleep(0.01)
 
